@@ -316,7 +316,7 @@ def save_csv(samples: list[Sample], path: str) -> None:
         w.writeheader()
         for s in samples:
             w.writerow(asdict(s))
-    print(f"\nRohdaten → {path}")
+    print(f"\nRohdaten -> {path}")
 
 
 # ----- Plots -----------------------------------------------------------------
@@ -388,7 +388,7 @@ def plot_results(samples: list[Sample], path: str) -> None:
         xs = [s.output_tokens for s in ok if s.model == m]
         ys = [s.total for s in ok if s.model == m]
         ax.scatter(xs, ys, label=m, color=color_map[m], alpha=0.7, s=40)
-    ax.set_title("Output-Tokens → Total-Latenz")
+    ax.set_title("Output-Tokens -> Total-Latenz")
     ax.set_xlabel("Output-Tokens")
     ax.set_ylabel("Total Latency (s)")
     ax.legend(fontsize=8)
@@ -418,7 +418,7 @@ def plot_results(samples: list[Sample], path: str) -> None:
     plt.tight_layout()
     plt.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
-    print(f"Plots → {path}")
+    print(f"Plots -> {path}")
 
 
 # ----- Main ------------------------------------------------------------------
