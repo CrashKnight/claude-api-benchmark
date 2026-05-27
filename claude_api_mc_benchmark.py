@@ -1,11 +1,11 @@
 """
 Monte-Carlo-Latenz-Benchmark für die Claude API.
 
-Sampelt zufällige Kombinationen aus (Modell, Prompt-Größe, max_tokens),
+Sampelt zufällige Kombinationen aus (Modell, Prompt-Kategorie, Prompt-Größe, max_tokens),
 führt API-Calls aus und berichtet Latenz-Verteilungen (Mean, Median, P95, P99).
 
 Voraussetzungen:
-    pip install anthropic python-dotenv
+    pip install -r requirements.txt
     .env-Datei anlegen mit: ANTHROPIC_API_KEY=sk-ant-...
 
 Ausführen:
@@ -16,10 +16,11 @@ Sampling ein paar Cent bis ein paar Dollar API-Kosten anfallen.
 """
 
 import csv
+import json
 import random
 import statistics
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 
 import matplotlib.pyplot as plt
 from anthropic import Anthropic
@@ -39,33 +40,122 @@ MODELS = [
 
 # Prompt-Größen in Wörtern (1 Wort ≈ 1.3 Tokens grob)
 PROMPT_SIZES = {
-    "tiny":   10,     # ~13 Tokens
-    "small":  100,    # ~130 Tokens
-    "medium": 500,    # ~650 Tokens
-    "large":  2000,   # ~2.6k Tokens
-    "xlarge": 8000,   # ~10k Tokens
+    "tiny":   10,
+    "small":  100,
+    "medium": 500,
+    "large":  2000,
+    "xlarge": 8000,
 }
 
 MAX_TOKENS_OPTIONS = [50, 200, 500, 1000]
 
-# Basis-Wortpool, aus dem Prompts generiert werden
-LOREM = (
-    "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod "
-    "tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam "
-    "quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo "
-    "consequat duis aute irure reprehenderit voluptate velit esse cillum"
+# ----- Prompt-Generatoren pro Kategorie --------------------------------------
+
+_PROSE_WORDS = (
+    "der die das ein eine ist hat wird war wurde haben werden sein können müssen "
+    "sollen wollen Zeit Mensch Leben Welt Jahr Tag Haus Land Mann Frau Kind "
+    "Arbeit Stadt Hand Schule Wasser Geld Problem Frage Möglichkeit Entwicklung "
+    "Gesellschaft Situation Bereich System Ergebnis Bedeutung Aufgabe Prozess"
 ).split()
 
+_CODE_NAMES = (
+    "data result value item count index key node tree graph config "
+    "settings output input buffer cache handler parser builder manager"
+).split()
+_CODE_TYPES = "int str list dict bool float None bytes".split()
 
-def make_prompt(word_count: int, rng: random.Random) -> str:
-    """Erzeugt einen Prompt mit ungefähr word_count Wörtern + klare Aufgabe."""
-    words = (LOREM * (word_count // len(LOREM) + 1))[:word_count]
+
+def _make_prose(word_count: int, rng: random.Random) -> str:
+    words = (_PROSE_WORDS * (word_count // len(_PROSE_WORDS) + 1))[:word_count]
     rng.shuffle(words)
-    return (
-        " ".join(words)
-        + "\n\nFasse den obigen Text in einem Satz auf Deutsch zusammen."
-    )
+    return " ".join(words) + "\n\nFasse den obigen Text in einem Satz auf Deutsch zusammen."
 
+
+def _make_code(word_count: int, rng: random.Random) -> str:
+    lines = []
+    words_used = 0
+    while words_used < word_count:
+        name = rng.choice(_CODE_NAMES)
+        other = rng.choice(_CODE_NAMES)
+        t = rng.choice(_CODE_TYPES)
+        line = rng.choice([
+            f"def {name}({other}: {t}) -> {rng.choice(_CODE_TYPES)}:",
+            f"    {name} = {other}.{rng.choice(_CODE_NAMES)}()",
+            f"    return {name}",
+            f"{name} = [{other} for {other} in range({rng.randint(1, 100)})]",
+            f"if {name} is not None:",
+            f"    {name}.append({other})",
+            f"{name}: {t} = {rng.choice([str(rng.randint(0, 999)), repr(''), 'None', '[]', '{}'])}",
+        ])
+        lines.append(line)
+        words_used += len(line.split())
+    code = "\n".join(lines)
+    return f"```python\n{code}\n```\n\nErkläre kurz auf Deutsch, was dieser Code macht."
+
+
+def _make_json(word_count: int, rng: random.Random) -> str:
+    _keys = (
+        "id name type value status config data result error message "
+        "count total active enabled version created updated"
+    ).split()
+
+    def _val():
+        c = rng.randint(0, 3)
+        if c == 0:
+            return rng.randint(0, 9999)
+        if c == 1:
+            return rng.choice(["active", "inactive", "pending", "error"])
+        if c == 2:
+            return bool(rng.randint(0, 1))
+        return f"item_{rng.randint(100, 999)}"
+
+    def _obj(depth: int = 0) -> dict:
+        o = {}
+        for _ in range(rng.randint(3, 6)):
+            k = rng.choice(_keys)
+            o[k] = _obj(depth + 1) if depth < 2 and rng.random() > 0.65 else _val()
+        return o
+
+    blocks, total = [], 0
+    while total < word_count:
+        s = json.dumps(_obj(), indent=2)
+        blocks.append(s)
+        total += len(s.split())
+    return "\n".join(blocks) + "\n\nListe alle vorhandenen Schlüssel (keys) auf."
+
+
+def _make_instruction(word_count: int, rng: random.Random) -> str:
+    _topics = [
+        "Python-Skript", "REST-API", "Datenbank-Schema", "CI/CD-Pipeline",
+        "Docker-Container", "Machine-Learning-Modell", "Webserver", "CLI-Tool",
+        "Monitoring-System", "Authentifizierungs-Service",
+    ]
+    _actions = [
+        "implementieren", "optimieren", "debuggen",
+        "dokumentieren", "testen", "deployen",
+    ]
+    _details = [
+        "Berücksichtige dabei Performance und Sicherheit.",
+        "Achte auf Fehlerbehandlung und Logging.",
+        "Schreibe Tests für alle Kernfunktionen.",
+        "Halte die Abhängigkeiten minimal.",
+        "Dokumentiere alle öffentlichen Schnittstellen.",
+    ]
+    steps, words_used, n = [], 0, 1
+    while words_used < word_count:
+        step = f"{n}. {rng.choice(_topics)} {rng.choice(_actions)}: {rng.choice(_details)}"
+        steps.append(step)
+        words_used += len(step.split())
+        n += 1
+    return "\n".join(steps) + "\n\nWelcher Schritt ist am komplexesten? Antworte in einem Satz."
+
+
+PROMPT_CATEGORIES = {
+    "prose":       _make_prose,
+    "code":        _make_code,
+    "json":        _make_json,
+    "instruction": _make_instruction,
+}
 
 # ----- Daten-Container -------------------------------------------------------
 
@@ -73,25 +163,26 @@ def make_prompt(word_count: int, rng: random.Random) -> str:
 class Sample:
     iteration: int
     model: str
+    category: str
     prompt_size: str
     word_count: int
     max_tokens: int
     input_tokens: int = 0
     output_tokens: int = 0
-    ttft: float = float("nan")     # Time To First Token (s)
-    total: float = float("nan")    # Gesamt-Latenz (s)
-    tps: float = 0.0               # Output-Tokens pro Sekunde
+    ttft: float = float("nan")
+    total: float = float("nan")
+    tps: float = 0.0
     error: str = ""
 
 
 # ----- Einzelner API-Call ----------------------------------------------------
 
-def single_run(it: int, model: str, size_name: str, word_count: int,
-               max_tokens: int, rng: random.Random) -> Sample:
-    prompt = make_prompt(word_count, rng)
+def single_run(it: int, model: str, category: str, size_name: str,
+               word_count: int, max_tokens: int, rng: random.Random) -> Sample:
+    prompt = PROMPT_CATEGORIES[category](word_count, rng)
     sample = Sample(
-        iteration=it, model=model, prompt_size=size_name,
-        word_count=word_count, max_tokens=max_tokens,
+        iteration=it, model=model, category=category,
+        prompt_size=size_name, word_count=word_count, max_tokens=max_tokens,
     )
 
     start = time.perf_counter()
@@ -136,17 +227,17 @@ def monte_carlo(n_iterations: int = 60, seed: int = 42,
         model = rng.choice(MODELS)
         size_name, word_count = rng.choice(list(PROMPT_SIZES.items()))
         max_tok = rng.choice(MAX_TOKENS_OPTIONS)
+        category = rng.choice(list(PROMPT_CATEGORIES.keys()))
 
-        s = single_run(i, model, size_name, word_count, max_tok, rng)
+        s = single_run(i, model, category, size_name, word_count, max_tok, rng)
         samples.append(s)
 
         status = "ERR" if s.error else "OK "
         print(f"  [{i + 1:3d}/{n_iterations}] {status} {s.model:18s} "
-              f"size={s.prompt_size:6s} max_tok={s.max_tokens:4d} "
+              f"cat={s.category:11s} size={s.prompt_size:6s} max_tok={s.max_tokens:4d} "
               f"in={s.input_tokens:5d} out={s.output_tokens:4d} "
               f"total={s.total:6.2f}s ttft={s.ttft:5.2f}s tps={s.tps:5.1f}")
 
-        # Jitter, um Rate Limits und Burst-Effekte zu glätten
         time.sleep(rng.uniform(*pause_range))
 
     return samples
@@ -198,6 +289,14 @@ def report(samples: list[Sample]) -> None:
     for m in MODELS:
         print(_line(m, [s.total for s in ok if s.model == m]))
 
+    print("\nPro Kategorie — TTFT (s):")
+    for cat in PROMPT_CATEGORIES:
+        print(_line(cat, [s.ttft for s in ok if s.category == cat]))
+
+    print("\nPro Kategorie — Total (s):")
+    for cat in PROMPT_CATEGORIES:
+        print(_line(cat, [s.total for s in ok if s.category == cat]))
+
     print("\nPro Prompt-Größe — TTFT (s):")
     for size in PROMPT_SIZES:
         print(_line(size, [s.ttft for s in ok if s.prompt_size == size]))
@@ -205,7 +304,7 @@ def report(samples: list[Sample]) -> None:
     if errs:
         print("\nFehler-Beispiele:")
         for e in errs[:5]:
-            print(f"  - {e.model} {e.prompt_size}: {e.error}")
+            print(f"  - {e.model} {e.category} {e.prompt_size}: {e.error}")
 
 
 def save_csv(samples: list[Sample], path: str) -> None:
@@ -223,14 +322,16 @@ def save_csv(samples: list[Sample], path: str) -> None:
 # ----- Plots -----------------------------------------------------------------
 
 def plot_results(samples: list[Sample], path: str) -> None:
-    ok = [s for s in samples if not s.error and s.ttft == s.ttft]  # NaN filtern
+    ok = [s for s in samples if not s.error and s.ttft == s.ttft]
     if not ok:
         print("Keine erfolgreichen Samples zum Plotten.")
         return
 
     models_present = [m for m in MODELS if any(s.model == m for s in ok)]
     sizes_present = [sz for sz in PROMPT_SIZES if any(s.prompt_size == sz for s in ok)]
+    cats_present = [c for c in PROMPT_CATEGORIES if any(s.category == c for s in ok)]
     color_map = {m: c for m, c in zip(MODELS, ["#4C72B0", "#DD8452", "#55A467"])}
+    cat_colors = ["#9B59B6", "#E74C3C", "#1ABC9C", "#F39C12"]
 
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
     fig.suptitle(f"Claude API Latenz-Benchmark — N={len(ok)} Samples",
@@ -270,20 +371,18 @@ def plot_results(samples: list[Sample], path: str) -> None:
     ax.set_xlabel("Prompt-Größe")
     ax.grid(True, alpha=0.3)
 
-    # 4) Scatter: Input-Tokens vs TTFT (Skalierung mit Input)
+    # 4) Boxplot: TTFT pro Kategorie
     ax = axes[1, 0]
-    for m in models_present:
-        xs = [s.input_tokens for s in ok if s.model == m]
-        ys = [s.ttft for s in ok if s.model == m]
-        ax.scatter(xs, ys, label=m, color=color_map[m], alpha=0.7, s=40)
-    ax.set_xscale("log")
-    ax.set_title("Input-Tokens → TTFT")
-    ax.set_xlabel("Input-Tokens (log)")
+    data = [[s.ttft for s in ok if s.category == c] for c in cats_present]
+    bp = ax.boxplot(data, labels=cats_present, patch_artist=True, showfliers=True)
+    for patch, color in zip(bp["boxes"], cat_colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+    ax.set_title("TTFT pro Kategorie")
     ax.set_ylabel("TTFT (s)")
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3, which="both")
+    ax.grid(True, alpha=0.3)
 
-    # 5) Scatter: Output-Tokens vs Total (Skalierung mit Output)
+    # 5) Scatter: Output-Tokens vs Total-Latenz
     ax = axes[1, 1]
     for m in models_present:
         xs = [s.output_tokens for s in ok if s.model == m]
@@ -295,7 +394,7 @@ def plot_results(samples: list[Sample], path: str) -> None:
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # 6) Bar: Throughput (Tokens/s) pro Modell
+    # 6) Bar: Throughput pro Modell
     ax = axes[1, 2]
     means, meds, labels = [], [], []
     for m in models_present:
