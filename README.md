@@ -74,3 +74,7 @@ Mit N=60 Iterationen und gemischten Prompt-Größen entstehen je nach Sampling *
 | Opus 4.5 | ~1.35s | ~52 tok/s |
 
 *Werte variieren je nach Tageszeit und Serverlast.*
+
+## Disclaimer
+
+The author, contributors, administrators, vandals or anyone else connected to CrashKnight assumes no responsibility or liability for any errors or omissions in the content of this site including but not limited to the documents, information, applications, codes and inter alia. The information contained in this site is provided on an "as is" basis with no guarantees of completeness, accuracy, usefulness or timeliness. Any action you take upon the information, documents, applications, codes and inter alia on this webpage is strictly at your own risk, and we will not be liable for any losses or damages in connection with the use of such.
